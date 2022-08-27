@@ -11,9 +11,9 @@ __all__ = [
     "__copyright__",
 ]
 
-__title__ = "toreplace"
+__title__ = "jaxmodel"
 __summary__ = ""
-__uri__ = "https://github.com/ihmeuw-msca/toreplace"
+__uri__ = "https://github.com/ihmeuw-msca/jaxmodel"
 __version__ = "0.0.0"
 __author__ = "IHME Math Sciences"
 __email__ = "ihme.math.sciences@gmail.com"

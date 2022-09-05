@@ -5,7 +5,7 @@ from typing import Callable, Optional
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
-from jax import grad, jacfwd, jacrev, jit
+from jax import grad, hessian, jit
 from numpy.typing import NDArray
 from scipy.optimize import Bounds, minimize
 
@@ -30,7 +30,7 @@ class Model:
         self.attach_data(data)
 
         self.gradient = jit(grad(self.objective))
-        self.hessian = jit(jacfwd(jacrev(self.objective)))
+        self.hessian = jit(hessian(self.objective))
 
         self.opt_result = None
 

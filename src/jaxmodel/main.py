@@ -105,3 +105,19 @@ class Model:
             constraints=constraints,
             options=options
         )
+
+    def predict(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+
+        self.clear()
+        self.formula.mu.attach(df)
+        self.formula.alpha.attach(df)
+
+        x_mu = self.opt_result.x[:self.formula.mu.size]
+        x_alpha = self.opt_result.x[self.formula.mu.size:]
+        df["mu"] = self.formula.mu.get_params(x_mu)
+        df["alpha"] = self.formula.alpha.get_params(x_alpha)
+
+        self.clear()
+
+        return df

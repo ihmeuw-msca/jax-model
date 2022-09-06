@@ -8,7 +8,8 @@ import pandas as pd
 from anml.data.component import Component
 from jax import grad, hessian, jit
 from numpy.typing import NDArray
-from scipy.optimize import minimize
+from scipy.linalg import block_diag
+from scipy.optimize import Bounds, LinearConstraint, minimize
 
 from jaxmodel.parameter import JaxParameter
 
@@ -51,17 +52,48 @@ class Model:
         obs_mean = self.formula.obs_mean.value
         obs_se = self.formula.obs_se.value
 
-        mu = self.formula.mu.get_params(x[:self.formula.mu.size])
-        alpha = self.formula.alpha.get_params(x[self.formula.mu.size:])
+        x_mu = x[:self.formula.mu.size]
+        x_alpha = x[self.formula.mu.size:]
+
+        mu = self.formula.mu.get_params(x_mu)
+        alpha = self.formula.alpha.get_params(x_alpha)
 
         residual = obs_mean - mu
         variance = alpha + obs_se**2
-        return 0.5*jnp.sum(residual**2/variance + jnp.log(variance))
+
+        value = 0.5*jnp.sum(residual**2/variance + jnp.log(variance))
+        value += self.formula.mu.prior_objective(x_mu)
+        value += self.formula.alpha.prior_objective(x_alpha)
+
+        return value
+
+    def get_bounds(self) -> Bounds:
+        bounds = np.hstack([
+            self.formula.mu.prior_dict["direct"]["UniformPrior"].params,
+            self.formula.alpha.prior_dict["direct"]["UniformPrior"].params,
+        ])
+        return Bounds(lb=bounds[0], ub=bounds[1])
+
+    def get_constraints(self) -> Optional[list[LinearConstraint]]:
+        mat = block_diag(
+            self.formula.mu.prior_dict["linear"]["UniformPrior"].mat,
+            self.formula.alpha.prior_dict["linear"]["UniformPrior"].mat,
+        )
+        bounds = np.hstack([
+            self.formula.mu.prior_dict["linear"]["UniformPrior"].params,
+            self.formula.alpha.prior_dict["linear"]["UniformPrior"].params,
+        ])
+        if mat.size == 0 and bounds.size == 0:
+            return None
+        return [LinearConstraint(A=mat, lb=bounds[0], ub=bounds[1])]
 
     def fit(self, x0: Optional[NDArray] = None, options: Optional[dict] = None) -> None:
         size = self.formula.mu.size + self.formula.alpha.size
         if x0 is None:
             x0 = np.zeros(size)
+
+        bounds = self.get_bounds()
+        constraints = self.get_constraints()
 
         self.opt_result = minimize(
             self.objective,
@@ -69,5 +101,7 @@ class Model:
             method="trust-constr",
             jac=self.gradient,
             hess=self.hessian,
+            bounds=bounds,
+            constraints=constraints,
             options=options
         )

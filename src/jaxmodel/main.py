@@ -1,52 +1,47 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import partial
-from typing import Callable, Optional
+from typing import Optional
 
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
-from jax import grad, jacfwd, jacrev, jit
+from anml.data.component import Component
+from jax import grad, hessian, jit
 from numpy.typing import NDArray
-from scipy.optimize import Bounds, minimize
+from scipy.linalg import block_diag
+from scipy.optimize import Bounds, LinearConstraint, minimize
+
+from jaxmodel.parameter import JaxParameter
 
 
 @dataclass
 class Formula:
 
-    obs_mean: str = "obs_mean"
-    obs_se: str = "obs_se"
-    covs: list[str] = field(default_factory=list)
-    link: Callable[[NDArray], NDArray] = jit(lambda x: x)
-
-    def __post_init__(self) -> None:
-        if not self.covs:
-            self.covs = ["intercept"]
+    obs_mean: Component
+    obs_se: Component
+    mu: JaxParameter
+    alpha: JaxParameter
 
 
 class Model:
 
     def __init__(self, formula: Formula, data: Optional[pd.DataFrame] = None) -> None:
         self.formula = formula
-        self.attach_data(data)
+        self.attach(data)
 
         self.gradient = jit(grad(self.objective))
-        self.hessian = jit(jacfwd(jacrev(self.objective)))
+        self.hessian = jit(hessian(self.objective))
 
         self.opt_result = None
 
-    def attach_data(self, data: Optional[pd.DataFrame]) -> None:
+    def attach(self, data: Optional[pd.DataFrame]) -> None:
         if data is not None:
-            data = data.copy()
-            if "intercept" not in data:
-                data["intercept"] = 1.0
-            self._data = (
-                data[self.formula.obs_mean].to_numpy(),
-                data[self.formula.obs_se].to_numpy(),
-                data[self.formula.covs].to_numpy(),
-            )
+            for attr in vars(self.formula).values():
+                attr.attach(data)
 
-    def detach_data(self) -> None:
-        self._data = None
+    def clear(self) -> None:
+        for attr in vars(self.formula).values():
+            attr.clear()
 
     @property
     def data(self) -> Optional[tuple]:
@@ -54,23 +49,51 @@ class Model:
 
     @partial(jit, static_argnums=(0,))
     def objective(self, x: NDArray) -> float:
-        obs_mean, obs_se, covs = self.data
-        prediction = self.formula.link(jnp.dot(covs, x[:-1]))
-        residual = obs_mean - prediction
-        variance = x[-1] + obs_se**2
-        return 0.5*jnp.sum(residual**2/variance + jnp.log(variance))
+        obs_mean = self.formula.obs_mean.value
+        obs_se = self.formula.obs_se.value
+
+        x_mu = x[:self.formula.mu.size]
+        x_alpha = x[self.formula.mu.size:]
+
+        mu = self.formula.mu.get_params(x_mu)
+        alpha = self.formula.alpha.get_params(x_alpha)
+
+        residual = obs_mean - mu
+        variance = alpha + obs_se**2
+
+        value = 0.5*jnp.sum(residual**2/variance + jnp.log(variance))
+        value += self.formula.mu.prior_objective(x_mu)
+        value += self.formula.alpha.prior_objective(x_alpha)
+
+        return value
+
+    def get_bounds(self) -> Bounds:
+        bounds = np.hstack([
+            self.formula.mu.prior_dict["direct"]["UniformPrior"].params,
+            self.formula.alpha.prior_dict["direct"]["UniformPrior"].params,
+        ])
+        return Bounds(lb=bounds[0], ub=bounds[1])
+
+    def get_constraints(self) -> Optional[list[LinearConstraint]]:
+        mat = block_diag(
+            self.formula.mu.prior_dict["linear"]["UniformPrior"].mat,
+            self.formula.alpha.prior_dict["linear"]["UniformPrior"].mat,
+        )
+        bounds = np.hstack([
+            self.formula.mu.prior_dict["linear"]["UniformPrior"].params,
+            self.formula.alpha.prior_dict["linear"]["UniformPrior"].params,
+        ])
+        if mat.size == 0 and bounds.size == 0:
+            return None
+        return [LinearConstraint(A=mat, lb=bounds[0], ub=bounds[1])]
 
     def fit(self, x0: Optional[NDArray] = None, options: Optional[dict] = None) -> None:
-        if self.data is None:
-            raise ValueError("please attach data before fit the model")
-
-        num_covs = len(self.formula.covs)
+        size = self.formula.mu.size + self.formula.alpha.size
         if x0 is None:
-            x0 = np.zeros(num_covs + 1)
-        bounds = Bounds(
-            lb=[-np.inf]*num_covs + [0.0],
-            ub=[np.inf]*(num_covs + 1),
-        )
+            x0 = np.zeros(size)
+
+        bounds = self.get_bounds()
+        constraints = self.get_constraints()
 
         self.opt_result = minimize(
             self.objective,
@@ -79,5 +102,22 @@ class Model:
             jac=self.gradient,
             hess=self.hessian,
             bounds=bounds,
+            constraints=constraints,
             options=options
         )
+
+    def predict(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+
+        self.clear()
+        self.formula.mu.attach(df)
+        self.formula.alpha.attach(df)
+
+        x_mu = self.opt_result.x[:self.formula.mu.size]
+        x_alpha = self.opt_result.x[self.formula.mu.size:]
+        df["mu"] = self.formula.mu.get_params(x_mu)
+        df["alpha"] = self.formula.alpha.get_params(x_alpha)
+
+        self.clear()
+
+        return df

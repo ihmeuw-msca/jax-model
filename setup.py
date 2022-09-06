@@ -19,6 +19,7 @@ if __name__ == "__main__":
         "numpy",
         "scipy",
         "pandas",
+        "anml",
     ]
     test_requirements = [
         "pytest",

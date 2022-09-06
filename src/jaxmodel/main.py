@@ -35,20 +35,12 @@ class Model:
 
     def attach(self, data: Optional[pd.DataFrame]) -> None:
         if data is not None:
-            self.formula.obs_mean.attach(data)
-            self.formula.obs_se.attach(data)
-            self.formula.mu.attach(data)
-            self.formula.alpha.attach(data)
+            for attr in vars(self.formula).values():
+                attr.attach(data)
 
     def clear(self) -> None:
-        self.formula.obs_mean.clear()
-        self.formula.obs_se.clear()
-        for v in self.formula.mu.variables:
-            v.component.clear()
-        self.formula.mu.design_mat = None
-        for v in self.formula.alpha.variables:
-            v.component.clear()
-        self.formula.alpha.design_mat = None
+        for attr in vars(self.formula).values():
+            attr.clear()
 
     @property
     def data(self) -> Optional[tuple]:

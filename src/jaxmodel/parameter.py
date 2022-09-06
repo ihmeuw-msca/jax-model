@@ -26,3 +26,8 @@ class JaxParameter(Parameter):
         if self.offset is not None:
             y += self.offset.value
         return self.transform(y)
+
+    def clear(self):
+        for v in self.variables:
+            v.component.clear()
+        self.design_mat = None
